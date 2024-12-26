@@ -1,0 +1,11 @@
+spring:
+  application:
+    name: datingBot
+  datasource:
+    url: jdbc:postgresql://localhost:5432/test_db
+    username: jdbc_test
+    password: 123456
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
