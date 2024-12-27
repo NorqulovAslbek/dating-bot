@@ -13,7 +13,10 @@ import org.telegram.telegrambots.meta.api.objects.CallbackQuery
 import org.telegram.telegrambots.meta.api.objects.Message
 import org.telegram.telegrambots.meta.api.objects.Update
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMarkup
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardButton
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardRow
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException
 import java.util.*
 
@@ -22,6 +25,9 @@ class BotHandler(
     private var userService: UserService
 ) : TelegramLongPollingBot() {
     private val deleteDate = mutableMapOf<Long, Int>()
+    private val searchingMap = mutableMapOf<Long, Gender>() // Har bir foydalanuvchi uchun izlayotgan jinsini saqlash
+    private val userConnections = mutableMapOf<Long, Long>() // Foydalanuvchi va ulangan foydalanuvchi chatId saqlanadi
+
 
     override fun getBotUsername(): String {
         return "@asl_bec_bot"
@@ -54,9 +60,28 @@ class BotHandler(
         }
     }
 
+    private fun handleTextMessage(message: Message) {
+        val chatId = message.chatId
+        if (!userService.checkExistByUser(chatId)) {
+            userService.save(User(chatId)) // boshida userni save qiladi chat id sini
+            sendAgeInlineKeyboardButton(chatId)
+            userService.updateStep(chatId, Step.AGE)
+        } else if (userService.findByChatId(chatId) == Step.CHATTING) {
+            execute(SendMessage().apply {
+                this.chatId = userConnections[chatId].toString()
+                text = message.text
+            })
+        } else if (userService.findByChatId(chatId) == Step.CONNECTION) {
+            when (message.text) {
+                "O'g'il bola izlash\uD83E\uDD34" -> startSearch(chatId, Gender.MEN)
+                "\uD83D\uDC78Qiz bola izlash" -> startSearch(chatId, Gender.WOMEN)
+            }
+        }
+    }
+
     private fun handleCallbackQuery(callbackQuery: CallbackQuery) {
         val chatId = callbackQuery.message.chatId
-        if (callbackQuery.data.all { it.isDigit() }) {
+        if (userService.findByChatId(chatId) == Step.AGE) {
             val age = callbackQuery.data
             userService.saveAge(chatId, age)
             val messageId = deleteDate[chatId]
@@ -65,37 +90,48 @@ class BotHandler(
                 deleteDate.remove(chatId)
                 sendGenderKeyboardButton(chatId)
             }
-        } else {
+            userService.updateStep(chatId, Step.GENDER)
+        } else if (userService.findByChatId(chatId) == Step.GENDER) {
             val choseGender = callbackQuery.data
             if (choseGender == "MEN") {
                 userService.updateGender(chatId, Gender.MEN)
+                // Jinsni saqlash
+                searchingMap[chatId] = Gender.MEN
             } else {
                 userService.updateGender(chatId, Gender.WOMEN)
+                // Jinsni saqlash
+                searchingMap[chatId] = Gender.MEN
             }
             val messageId = deleteDate[chatId]
             if (messageId != null) {
                 deleteMessage(chatId, messageId)
                 deleteDate.remove(chatId)
+                createReplyKeyboard(chatId)
             }
-            userService.updateStep(chatId, Step.GENDER)
+            userService.updateStep(chatId, Step.CONNECTION)
         }
     }
 
-    private fun handleTextMessage(message: Message) {
-        val chatId = message.chatId
-        if (!userService.checkExistByUser(chatId)) {
-            userService.save(User(chatId)) // boshida userni save qiladi chat id sini
-            sendAgeInlineKeyboardButton(chatId)
-            userService.updateStep(chatId, Step.AGE)
-        } else {
-            val userStep = userService.findByChatId(chatId)
-            if (userStep != null) {
-                execute(SendMessage().apply {
-                    this.chatId = chatId.toString()
-                    text = "mavjud bolmagan habarni jonatingiz\uD83E\uDD2C"
-                })
+
+    private fun startSearch(chatId: Long, gender: Gender) {
+        searchingMap[chatId] = gender
+        connectUsers(chatId, gender)
+    }
+
+    private fun connectUsers(chatId: Long, gender: Gender) {
+        for ((otherChatId, otherGender) in searchingMap) {
+            if (otherChatId != chatId && otherGender == gender) {
+                userConnections[chatId] = otherChatId
+                userConnections[otherChatId] = chatId
+                sendMessage(chatId, "Sizga yangi ulanish topildi!")
+                sendMessage(otherChatId, "Sizga yangi ulanish topildi!")
+                userService.updateStep(chatId, Step.CHATTING)
+                userService.updateStep(otherChatId, Step.CHATTING)
+                return
             }
         }
+        sendMessage(chatId, "Hozirda mos keladigan foydalanuvchi mavjud emas.")
+
     }
 
     private fun sendGenderKeyboardButton(chatId: Long) {
@@ -181,6 +217,28 @@ class BotHandler(
         deleteDate[chatId] = messageId
     }
 
+    fun createReplyKeyboard(chatId: Long) {
+        val replyMarkup = ReplyKeyboardMarkup().apply {
+            resizeKeyboard = true // Klaviatura ekranga moslashadi
+        }
+
+
+        val row2 = KeyboardRow()
+        row2.add(KeyboardButton("O'g'il bola izlash\uD83E\uDD34"))
+        row2.add(KeyboardButton("\uD83D\uDC78Qiz bola izlash"))
+
+        val keyboard = mutableListOf<KeyboardRow>()
+        keyboard.add(row2)
+
+        replyMarkup.keyboard = keyboard
+
+        val sendMessage = SendMessage()
+        sendMessage.chatId = chatId.toString()
+        sendMessage.text = "Siz endi botimizdan foydalana olasiz!!"
+        sendMessage.replyMarkup = replyMarkup
+        execute(sendMessage)
+    }
+
     private fun deleteMessage(chatId: Long, messageId: Int) {
         try {
             execute(
@@ -192,6 +250,13 @@ class BotHandler(
         } catch (e: TelegramApiException) {
             e.printStackTrace()
         }
+    }
+
+    private fun sendMessage(chatId: Long, text: String) {
+        val message = SendMessage()
+        message.chatId = chatId.toString()
+        message.text = text
+        execute(message)
     }
 
 
