@@ -1,6 +1,7 @@
 package com.example.datingbot.serviceImpl
 
 import com.example.datingbot.entity.User
+import com.example.datingbot.enums.Gender
 import com.example.datingbot.enums.Step
 import com.example.datingbot.repository.UserRepository
 import com.example.datingbot.service.UserService
@@ -20,5 +21,17 @@ class UserServiceImpl(
 
     override fun save(user: User) {
         userRepository.save(user)
+    }
+
+    override fun saveAge(chatId: Long, age: String) {
+        userRepository.updateAge(chatId,age)
+    }
+
+    override fun updateGender(chatId: Long, gender: Gender) {
+       userRepository.updateGender(chatId,gender)
+    }
+
+    override fun findByChatId(chatId: Long): Step? {
+        return userRepository.findByChatId(chatId)
     }
 }
